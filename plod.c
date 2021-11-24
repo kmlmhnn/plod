@@ -4,82 +4,105 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
-#include <errno.h>
 #include <libnotify/notify.h>
 #include <canberra.h>
 
 #define L 256
 
-#define M1() do { raw(); noecho(); nodelay(stdscr, TRUE); curs_set(FALSE); } while(0)
-#define M0() do { noraw(); echo(); nodelay(stdscr, FALSE); curs_set(TRUE); } while(0)
+enum {C, D, B, W, U, M} m = C;
+char s[M][L] = {};
+char p[M][L] = {};
 
-int match(const char *s, const char *p);
+void setcmdmode(int);
+void setinsmode();
+void loaddata(time_t *);
+void sendnotifications(ca_context *);
 
-int main() {
-    enum {C, D, B, W, U, M} m = C;
-    char s[M][L] = {};
-    char p[M][L] = {};
-    int  b0      = 0;
+int match(char *, char *);
 
-    initscr(); M1();
+int main(int argc, char* argv[]) {
+    int T  = argc > 1 ? *argv[1] - '0' : 1;
+
+    initscr();
+    setcmdmode(T);
+
     notify_init("plod");
-    ca_context *ca; ca_context_create(&ca);
+    ca_context *ca;
+    ca_context_create(&ca);
+
+    int c = ERR;
+    time_t t0 = time(NULL);
     while(1) {
-        time_t t = time(NULL); struct tm *tm = localtime(&t);
-        strftime(s[D], L, "%d/%m/%y", tm);
-        strftime(s[C], L, "%I:%M", tm);
+        time_t t = time(NULL);
 
-        FILE *f = fopen("/sys/class/power_supply/BAT0/capacity", "r");
-        fscanf(f, "%s", s[B]);
-        fclose(f);
-
-        f = fopen("/proc/net/dev", "r");
-        char buf[L];
-        while(fgets(buf, L, f)) {
-            int  b1;
-            if(sscanf(buf, "wlp1s0: %d", &b1)) {
-                double db = b1 - b0;
-                b0 = b1;
-                sprintf(s[W], "%d", (int) db / 1024);
-                break;
-            }
+        if(c == ERR || t-t0 >= T) {
+            loaddata(&t);
+            sendnotifications(ca);
+            t0 = t;
         }
-        fclose(f);
 
-        f = fopen("/proc/loadavg", "r");
-        float l; fscanf(f, "%f", &l);
-        sprintf(s[U], "%.f", l * 25);
-        fclose(f);
+        clear(); mvprintw(0, 0, s[m]); mvprintw(1, 0, p[m]); refresh();
 
-        switch(getch()) {
+        switch(c = getch()) {
             case 'c': m = C; break;
             case 'd': m = D; break;
             case 'b': m = B; break;
             case 'w': m = W; break;
             case 'u': m = U; break;
-            case '/': clear(); M0(); getnstr(p[m], L); M1(); break;
+            case '/': clear(); setinsmode(); getnstr(p[m], L); setcmdmode(T); break;
             case 'q': endwin(); exit(0);
         }
-
-        clear(); mvprintw(0, 0, s[m]); mvprintw(1, 0, p[m]); refresh();
-
-        for(int i = 0; i < M; i++) {
-            if(match(s[i], p[i])) {
-                char msg[3*L]; sprintf(msg, "%c matched: %s = %s", "cdbwu"[i], p[i], s[i]);
-                NotifyNotification *n = notify_notification_new(msg, NULL, NULL);
-                notify_notification_show(n, NULL);
-                g_object_unref(G_OBJECT(n));
-                ca_context_play(ca, 0, CA_PROP_EVENT_ID, "complete", CA_PROP_EVENT_DESCRIPTION, "match", NULL);
-                strcpy(p[i], "");
-            }
-        }
-
-        sleep(1);
     }
 }
 
-int match(const char *s, const char *p) {
+void setcmdmode(int t)  { raw(); noecho(); timeout(t*1000); curs_set(FALSE);}
+void setinsmode()       { noraw(); echo(); timeout(-1); curs_set(TRUE);     }
+
+void loaddata(time_t *t) {
+    struct tm *tm = localtime(t);
+    strftime(s[D], L, "%d/%m/%y", tm);
+    strftime(s[C], L, "%I:%M", tm);
+
+    FILE *f = fopen("/sys/class/power_supply/BAT0/capacity", "r");
+    fscanf(f, "%s", s[B]);
+    fclose(f);
+
+    static int b0 = 0;
+    f = fopen("/proc/net/dev", "r");
+    char buf[L];
+    while(fgets(buf, L, f)) {
+        int b;
+        if(sscanf(buf, "wlp1s0: %d", &b)) {
+            double db = b - b0;
+            b0 = b;
+            sprintf(s[W], "%d", (int) db / 1024);
+            break;
+        }
+    }
+    fclose(f);
+
+    f = fopen("/proc/loadavg", "r");
+    float l;
+    fscanf(f, "%f", &l);
+    sprintf(s[U], "%.f", l * 25);
+    fclose(f);
+}
+
+void sendnotifications(ca_context *ca) {
+    for(int i = 0; i < M; i++) {
+        if(match(s[i], p[i])) {
+            char msg[3*L]; sprintf(msg, "%c matched: %s = %s", "cdbwu"[i], p[i], s[i]);
+            NotifyNotification *n = notify_notification_new(msg, NULL, NULL);
+            notify_notification_show(n, NULL);
+            g_object_unref(G_OBJECT(n));
+            ca_context_play(ca, 0, CA_PROP_EVENT_ID, "complete", CA_PROP_EVENT_DESCRIPTION, "match", NULL);
+            strcpy(p[i], "");
+        }
+    }
+}
+
+int match(char *s, char *p) {
     int l, m;
-    for(l = strlen(s), m = strlen(p); l > 0 && (*s == *p || *p == '_'); s++, p++, --l, --m);
+    for(l = strlen(s), m = strlen(p); l > 0 && (*s == *p || *p == '_'); ++s, ++p, --l, --m);
     return !(l+m);
 }
