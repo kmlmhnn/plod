@@ -8,20 +8,24 @@
 #include <canberra.h>
 
 #define L 256
-
 enum {C, D, B, W, U, M} m = C;
 char s[M][L] = {};
 char p[M][L] = {};
 
+int TO;
+int sticky[M] = {};
+time_t lastnotified[M] = {};
+
 void setcmdmode(int);
 void setinsmode();
 void loaddata(time_t *);
-void sendnotifications(ca_context *);
+void sendnotifications(ca_context *, time_t);
 
 int match(char *, char *);
 
 int main(int argc, char* argv[]) {
     int T  = argc > 1 ? *argv[1] - '0' : 1;
+        TO = argc > 2 ? *argv[2] - '0' : 1;
 
     initscr();
     setcmdmode(T);
@@ -37,7 +41,7 @@ int main(int argc, char* argv[]) {
 
         if(c == ERR || t-t0 >= T) {
             loaddata(&t);
-            sendnotifications(ca);
+            sendnotifications(ca, t);
             t0 = t;
         }
 
@@ -49,7 +53,8 @@ int main(int argc, char* argv[]) {
             case 'b': m = B; break;
             case 'w': m = W; break;
             case 'u': m = U; break;
-            case '/': clear(); setinsmode(); getnstr(p[m], L); setcmdmode(T); break;
+            case '/': clear(); setinsmode(); getnstr(p[m], L); sticky[m] = 0; setcmdmode(T); break;
+            case '?': clear(); setinsmode(); getnstr(p[m], L); sticky[m] = 1; setcmdmode(T); break;
             case 'q': endwin(); exit(0);
         }
     }
@@ -88,15 +93,22 @@ void loaddata(time_t *t) {
     fclose(f);
 }
 
-void sendnotifications(ca_context *ca) {
+void sendnotifications(ca_context *ca, time_t t) {
     for(int i = 0; i < M; i++) {
         if(match(s[i], p[i])) {
-            char msg[3*L]; sprintf(msg, "%c matched: %s = %s", "cdbwu"[i], p[i], s[i]);
-            NotifyNotification *n = notify_notification_new(msg, NULL, NULL);
-            notify_notification_show(n, NULL);
-            g_object_unref(G_OBJECT(n));
-            ca_context_play(ca, 0, CA_PROP_EVENT_ID, "complete", CA_PROP_EVENT_DESCRIPTION, "match", NULL);
-            strcpy(p[i], "");
+            if(t-lastnotified[i] >= TO*60) {
+                char msg[3*L]; sprintf(msg, "%c matched: %s = %s", "cdbwu"[i], p[i], s[i]);
+                NotifyNotification *n = notify_notification_new(msg, NULL, NULL);
+                notify_notification_show(n, NULL);
+                g_object_unref(G_OBJECT(n));
+                ca_context_play(ca, 0, CA_PROP_EVENT_ID, "complete", CA_PROP_EVENT_DESCRIPTION, "match", NULL);
+
+                lastnotified[i] = sticky[i] ? t : 0;
+
+                if(!sticky[i]) {
+                    strcpy(p[i], "");
+                }
+            }
         }
     }
 }
